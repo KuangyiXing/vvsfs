@@ -1,6 +1,7 @@
 
 
 /* mkfs.vvsfs - constructs an initial empty file system
+   initialize the file system
    Eric McCreath 2006 GPL */
 
 /* To compile :
@@ -50,7 +51,7 @@ int main(int argc, char ** argv) {
     if (i == 0) {  // the first block is an empty directory
       inode.is_empty = 0;
       inode.is_directory = 1;
-    } else {
+    } else { //other blocks are all empty.
       inode.is_empty = 1;
       inode.is_directory = 0;
     }

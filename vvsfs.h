@@ -14,10 +14,10 @@
 
 struct vvsfs_inode {
   int is_empty;
-  int is_directory;
-  int size;
+  int is_directory; // 1 means it is a directory, 0 means it is a normal file
+  int size;  // how big the file is
   char data[MAXFILESIZE];
-};
+};  //this inode has the metadata of the file and also the content of the file 
 
 struct vvsfs_dir_entry {
   char name[MAXNAME+1];

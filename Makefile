@@ -16,7 +16,7 @@ include Kbuild
 
 else
 # normal makefile
-KDIR ?= /usr/src/linux-headers-`uname -r`
+KDIR ?= /home/comp3300/linux-source-3.13.0
 
 kernel_mod:
 	$(MAKE) -C $(KDIR) M=$$PWD

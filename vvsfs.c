@@ -83,14 +83,17 @@ vvsfs_statfs(struct dentry *dentry, struct kstatfs *buf) {
 // vvsfs_readblock - reads a block from the block device (this will copy over
 //                      the top of inode)
 static int
-vvsfs_readblock(struct super_block *sb, int inum, struct vvsfs_inode *inode) {
+vvsfs_readblock(struct super_block *sb, int inum, struct vvsfs_inode *inode) {  // reference to a super block sitting in the VFS;inode number ;the block of inode you are reading
   struct buffer_head *bh;
 
   if (DEBUG) printk("vvsfs - readblock : %d\n", inum);
   
-  bh = sb_bread(sb,inum);
-  memcpy((void *) inode, (void *) bh->b_data, BLOCKSIZE);
-  brelse(bh);
+  bh = sb_bread(sb,inum);//initiate the block read of super block, bh is buffer head, stores the information about the buffer
+
+  // bh->b_data is part of information of that buffer
+  memcpy((void *) inode, (void *) bh->b_data, BLOCKSIZE); //copy the b_data to the inode struct
+
+  brelse(bh);//release the buffer head. if not, will cause memory leak.
   if (DEBUG) printk("vvsfs - readblock done : %d\n", inum);
   return BLOCKSIZE;
 }
@@ -103,10 +106,12 @@ vvsfs_writeblock(struct super_block *sb, int inum, struct vvsfs_inode *inode) {
 
   if (DEBUG) printk("vvsfs - writeblock : %d\n", inum);
 
-  bh = sb_bread(sb,inum);
-  memcpy(bh->b_data, inode, BLOCKSIZE);
-  mark_buffer_dirty(bh);
-  sync_dirty_buffer(bh);
+  bh = sb_bread(sb,inum); //get hold of that buffer
+
+  memcpy(bh->b_data, inode, BLOCKSIZE);//copy the inode data to the buffer head
+
+  mark_buffer_dirty(bh); // mark that buffer dirty, changed
+  sync_dirty_buffer(bh);  //force to write back to the actual hard disk
   brelse(bh);
   if (DEBUG) printk("vvsfs - writeblock done: %d\n", inum);
   return BLOCKSIZE;
@@ -201,6 +206,63 @@ vvsfs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
   return NULL;
 }
 
+int vvsfs_unlink(struct inode *dir, struct dentry *dentry){
+        
+   int num_dirs;
+   int k, delindex, del_ino;
+ 
+   struct vvsfs_inode inodedata;
+   struct inode *inode = NULL;
+   struct vvsfs_dir_entry *dent;
+
+
+ if(DEBUG) printk("delete file\n");
+
+ vvsfs_readblock(dir->i_sb, dir->i_ino, &inodedata);
+ num_dirs = inodedata.size/sizeof(struct vvsfs_dir_entry);
+ delindex = -1;
+ 
+
+ for (k=0;k < num_dirs;k++) {
+
+    dent = (struct vvsfs_dir_entry *) ((inodedata.data) + k*sizeof(struct vvsfs_dir_entry));
+    
+         if (delindex == -1 && (strlen(dent->name) == dentry->d_name.len) &&  strncmp(dent->name,dentry->d_name.name,dentry->d_name.len) == 0) {
+               inode = vvsfs_iget(dir->i_sb, dent->inode_number);
+     
+              if (!inode)  return -ENOENT;
+              del_ino = dent->inode_number;
+              delindex = k;
+                   }
+        if (delindex != -1)
+             memcpy(dent,(struct vvsfs_dir_entry *)((inodedata.data)+ (k+1)*sizeof(struct vvsfs_dir_entry)),sizeof(struct vvsfs_dir_entry));
+
+}
+
+
+    if (delindex != -1){
+      inodedata.size = inodedata.size - sizeof(struct vvsfs_dir_entry);
+      dir->i_size = inodedata.size;
+      vvsfs_writeblock(dir->i_sb,dir->i_ino,&inodedata);
+
+      vvsfs_readblock(inode->i_sb,del_ino,&inodedata);
+      memset(inodedata.data,0,sizeof(inodedata.data));
+      inodedata.size = 0;
+      inodedata.is_empty = 1;
+      vvsfs_writeblock(dir->i_sb,del_ino, &inodedata);
+
+      inode_dec_link_count(inode);
+      mark_inode_dirty(inode);
+      
+      
+      return 0;
+
+    }
+else {
+    return -ENOENT;
+}
+
+}
 // vvsfs_empty_inode - finds the first free inode (returns -1 is unable to find one)
 static int vvsfs_empty_inode(struct super_block *sb) {
   struct vvsfs_inode block;
@@ -287,25 +349,29 @@ vvsfs_create(struct inode *dir, struct dentry* dentry, umode_t mode, bool excl)
  
 
   dent->inode_number = inode->i_ino;
-
+  
+  
+  dir->i_size = dirdata.size;
+  mark_inode_dirty(dir);
   
   vvsfs_writeblock(dir->i_sb,dir->i_ino,&dirdata);
 
   d_instantiate(dentry, inode);
 
+  
   printk("File created %ld\n",inode->i_ino);
   return 0;
 }
 
 // vvsfs_file_write - write to a file
 static ssize_t
-vvsfs_file_write(struct file *filp, const char *buf, size_t count, loff_t *ppos)
+vvsfs_file_write(struct file *filp, const char *buf, size_t count, loff_t *ppos) // a cache version of metadata of the file; user space the data was written; how much data there is; offset about where in the file begin to write
 {
   struct vvsfs_inode filedata; 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,19,0)
   struct inode *inode = filp->f_dentry->d_inode;
 #else
-  struct inode *inode = filp->f_path.dentry->d_inode;
+  struct inode *inode = filp->f_path.dentry->d_inode; // the cache version of inode for that file, it changes depending on the kernel version
 #endif
   ssize_t pos;
   struct super_block * sb;
@@ -328,25 +394,25 @@ vvsfs_file_write(struct file *filp, const char *buf, size_t count, loff_t *ppos)
   }  
   sb = inode->i_sb;
 
-  vvsfs_readblock(sb,inode->i_ino,&filedata);
+  vvsfs_readblock(sb,inode->i_ino,&filedata);//copy the block from the hard disk into a cache version. Writing means you have to read the data in first
 
   if (filp->f_flags & O_APPEND)
-    pos = inode->i_size;
+    pos = inode->i_size; //start at the end of our file
   else
     pos = *ppos;
 
-  if (pos + count > MAXFILESIZE) return -ENOSPC;
+  if (pos + count > MAXFILESIZE) return -ENOSPC; //return an error
 
-  filedata.size = pos+count;
-  p = filedata.data + pos;
-  if (copy_from_user(p,buf,count))
+  filedata.size = pos+count;// modify the filesize in cache version
+  p = filedata.data + pos; 
+  if (copy_from_user(p,buf,count))//copy the data from buffer to the position
     return -ENOSPC;
-  *ppos = pos;
+  *ppos = pos; // move the file index to the right spot.
   buf += count;
 
-  inode->i_size = filedata.size;
+  inode->i_size = filedata.size;  //reset the size in underline version in hard disk
 
-  vvsfs_writeblock(sb,inode->i_ino,&filedata);
+  vvsfs_writeblock(sb,inode->i_ino,&filedata); //write the block 
   
   if (DEBUG) printk("vvsfs - file write done : %zu ppos %Ld\n",count,*ppos);
   
@@ -412,7 +478,7 @@ static struct file_operations vvsfs_file_operations = {
 };
 
 static struct inode_operations vvsfs_file_inode_operations = {
-};
+};                                                                                                                                                            
 
 static struct file_operations vvsfs_dir_operations = {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
@@ -428,6 +494,7 @@ static struct file_operations vvsfs_dir_operations = {
 static struct inode_operations vvsfs_dir_inode_operations = {
    create:     vvsfs_create,                   /* create */
    lookup:     vvsfs_lookup,           /* lookup */
+   unlink:     vvsfs_unlink,           /* unlink */
 };
 
 // vvsfs_iget - get the inode from the super block
@@ -515,12 +582,12 @@ static struct dentry *vvsfs_mount(struct file_system_type *fs_type,
 				    int flags, const char *dev_name, void *data)
 {
   return mount_bdev(fs_type, flags, dev_name, data, vvsfs_fill_super);
-}
+} // it will execute vvsfs_fill_super function
 
 static struct file_system_type vvsfs_type = {
   .owner	= THIS_MODULE,
-  .name		= "vvsfs",
-  .mount	= vvsfs_mount,
+  .name		= "vvsfs",   // the name when i do cat /proc/filesystsms
+  .mount	= vvsfs_mount,  //when we mount the filesystem, it will execute the above vvsfs_mount function
   .kill_sb	= kill_block_super,
   .fs_flags	= FS_REQUIRES_DEV,
 };
@@ -528,7 +595,7 @@ static struct file_system_type vvsfs_type = {
 static int __init vvsfs_init(void)
 {
   printk("Registering vvsfs\n");
-  return register_filesystem(&vvsfs_type);
+  return register_filesystem(&vvsfs_type);/* this point to the vvsfs_type, which is above */ 
 }
 
 static void __exit vvsfs_exit(void)
