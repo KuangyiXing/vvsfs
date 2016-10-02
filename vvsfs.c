@@ -442,6 +442,56 @@ struct inode * vvsfs_new_inode(const struct inode * dir, umode_t mode)
   return inode;
 }
 
+//vvsfs_truncate  - truncate the file
+void vvsfs_truncate(struct inode * inode, loff_t size)
+{
+
+        struct vvsfs_inode inodedata;
+
+	if (!(S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode) || S_ISLNK(inode->i_mode)))
+		return;
+
+
+        vvsfs_readblock(inode->i_sb,inode->i_ino,&inodedata);
+
+
+        inodedata.size = (int )size;
+
+      vvsfs_writeblock(inode->i_sb,inode->i_ino,&inodedata);
+       
+         
+} 
+
+
+
+
+
+//vvsfs_setattr  - set attributes to the file
+static int vvsfs_setattr(struct dentry *dentry, struct iattr *attr){
+   
+   struct inode *inode = dentry->d_inode;
+   int error;
+
+   error = inode_change_ok(inode, attr);
+
+   if(error) return error;
+   
+   if ((attr->ia_valid & ATTR_SIZE) &&
+	    attr->ia_size != i_size_read(inode)) {
+		error = inode_newsize_ok(inode, attr->ia_size);
+		if (error)
+			return error;
+
+		truncate_setsize(inode, attr->ia_size);
+		vvsfs_truncate(inode,attr->ia_size);
+	}
+
+	setattr_copy(inode, attr);
+	mark_inode_dirty(inode);
+	return 0;
+
+}
+
 // vvsfs_create - create a new file in a directory 
 static int
 vvsfs_create(struct inode *dir, struct dentry* dentry, umode_t mode, bool excl)
@@ -603,9 +653,12 @@ vvsfs_file_read(struct file *filp, char *buf, size_t count, loff_t *ppos)
 static struct file_operations vvsfs_file_operations = {
         read: vvsfs_file_read,        /* read */
         write: vvsfs_file_write,       /* write */
+       
 };
 
 static struct inode_operations vvsfs_file_inode_operations = {
+
+        setattr :   vvsfs_setattr,   /*  truncate */
 };                                                                                                                                                            
 
 static struct file_operations vvsfs_dir_operations = {
