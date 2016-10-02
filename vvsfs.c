@@ -67,6 +67,7 @@ static struct super_operations vvsfs_ops;
 static struct file_operations vvsfs_dir_operations;
 static struct inode_operations vvsfs_dir_inode_operations;
 struct inode * vvsfs_new_inode(const struct inode *, umode_t);
+int vvsfs_unlink(struct inode *, struct dentry *);
 
 struct inode *vvsfs_iget(struct super_block *sb, unsigned long ino);
 static void
@@ -120,6 +121,8 @@ vvsfs_writeblock(struct super_block *sb, int inum, struct vvsfs_inode *inode) {
   return BLOCKSIZE;
 }
 
+
+//vvsfs_mkdir - make a directory - similar to create a file in directory
 static int vvsfs_mkdir(struct inode* dir,struct dentry *dentry,umode_t mode){
       
    struct vvsfs_inode inodedata;
@@ -136,14 +139,18 @@ static int vvsfs_mkdir(struct inode* dir,struct dentry *dentry,umode_t mode){
   
    inode = vvsfs_new_inode(dir,S_IRUGO|S_IWUGO|S_IFDIR);
 
-   inode_inc_link_count(inode);
+   
 
    if(!inode) return -ENOSPC;
    inode->i_mode = S_IRUGO|S_IWUGO|S_IFDIR;
    inode->i_op = &vvsfs_dir_inode_operations;
    inode->i_fop = &vvsfs_dir_operations;
-   
+
+
+   inode_inc_link_count(inode);
+
    /*get a vfs inode */
+
    if (!dir) return -1;
    
 
@@ -174,6 +181,66 @@ static int vvsfs_mkdir(struct inode* dir,struct dentry *dentry,umode_t mode){
    printk("Directory created %ld\n",inode->i_ino);
    return 0;
 }
+
+
+
+//vvsfs_empty_dir -to check whether the directory is empty and if it is not emptry, clean the directory
+static int vvsfs_empty_dir(struct inode *dir){
+     
+      struct vvsfs_inode inodedata;   //this is directory data
+      struct vvsfs_dir_entry * dent;
+      struct vvsfs_inode newinodedata;  //this is the each file data in the directory
+      struct inode * inode;
+      
+      int k,num_dirs;
+      vvsfs_readblock(dir->i_sb, dir->i_ino,&inodedata);//get the directory data
+      num_dirs = inodedata.size/sizeof(struct vvsfs_dir_entry);
+
+       for (k=0;k < num_dirs;k++) {
+
+             dent = (struct vvsfs_dir_entry *) ((inodedata.data) + k*sizeof(struct vvsfs_dir_entry));   // get each file directory entry in the directory
+             
+             inode = vvsfs_iget(dir->i_sb, dent->inode_number); // get each file's inode 
+            
+              vvsfs_readblock(inode->i_sb,inode->i_ino,&newinodedata); //get each file data in the directory
+
+
+              if(newinodedata.is_directory == 1) vvsfs_empty_dir(inode);//check whether it is directory
+              
+              
+              memset(newinodedata.data,0,sizeof(newinodedata.data));
+              newinodedata.size = 0;
+              newinodedata.is_empty = 1;
+              newinodedata.is_directory = 0;
+
+              vvsfs_writeblock(inode->i_sb,inode->i_ino,&newinodedata);
+}
+ 
+      inodedata.is_directory = 0;
+      vvsfs_writeblock(dir->i_sb,dir->i_ino,&inodedata);
+      return 0;
+}
+
+
+
+//vvsfs_rmdir  - remove directory from the directory
+static int vvsfs_rmdir(struct inode * dir, struct dentry * dentry){
+
+   struct inode * inode = dentry->d_inode;
+   
+   int err = -ENOTEMPTY;
+   if( vvsfs_empty_dir(inode) == 0){
+   err = vvsfs_unlink(dir,dentry);
+     if(!err){
+          inode->i_size = 0;
+          inode_dec_link_count(inode);
+          inode_dec_link_count(dir);
+          return 0;}
+    }
+    return err;
+
+}
+
 
 
 
@@ -557,6 +624,7 @@ static struct inode_operations vvsfs_dir_inode_operations = {
    lookup:     vvsfs_lookup,           /* lookup */
    unlink:     vvsfs_unlink,           /* unlink */
    mkdir:      vvsfs_mkdir,            /* make directory */
+   rmdir:      vvsfs_rmdir,            /* remove directory */
 };
 
 // vvsfs_iget - get the inode from the super block
