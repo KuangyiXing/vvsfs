@@ -454,7 +454,7 @@ void vvsfs_truncate(struct inode * inode, loff_t size)
 
         vvsfs_readblock(inode->i_sb,inode->i_ino,&inodedata);
 
-
+        inodedata.data[size] = '\0';
         inodedata.size = (int )size;
 
       vvsfs_writeblock(inode->i_sb,inode->i_ino,&inodedata);
