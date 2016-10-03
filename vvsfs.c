@@ -447,6 +447,7 @@ void vvsfs_truncate(struct inode * inode, loff_t size)
 {
 
         struct vvsfs_inode inodedata;
+      
 
 	if (!(S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode) || S_ISLNK(inode->i_mode)))
 		return;
@@ -454,7 +455,11 @@ void vvsfs_truncate(struct inode * inode, loff_t size)
 
         vvsfs_readblock(inode->i_sb,inode->i_ino,&inodedata);
 
-        inodedata.data[size] = '\0';
+        //inodedata.data[size] = '\0';
+       
+      
+        memset(&inodedata.data[size],0,inodedata.size - size);
+  
         inodedata.size = (int )size;
 
       vvsfs_writeblock(inode->i_sb,inode->i_ino,&inodedata);
