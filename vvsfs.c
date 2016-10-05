@@ -67,7 +67,8 @@ static struct super_operations vvsfs_ops;
 static struct file_operations vvsfs_dir_operations;
 static struct inode_operations vvsfs_dir_inode_operations;
 struct inode * vvsfs_new_inode(const struct inode *, umode_t);
-int vvsfs_unlink(struct inode *, struct dentry *);
+static int vvsfs_unlink(struct inode *, struct dentry *);
+int vvsfs_find_hard_link(struct inode *, struct dentry *);
 
 struct inode *vvsfs_iget(struct super_block *sb, unsigned long ino);
 static void
@@ -137,12 +138,11 @@ static int vvsfs_mkdir(struct inode* dir,struct dentry *dentry,umode_t mode){
  
    inode_inc_link_count(dir);
   
-   inode = vvsfs_new_inode(dir,S_IRUGO|S_IWUGO|S_IFDIR);
+   inode = vvsfs_new_inode(dir,S_IRUGO|S_IWUGO|S_IXUGO|S_IFDIR);
 
    
 
    if(!inode) return -ENOSPC;
-   inode->i_mode = S_IRUGO|S_IWUGO|S_IFDIR;
    inode->i_op = &vvsfs_dir_inode_operations;
    inode->i_fop = &vvsfs_dir_operations;
 
@@ -291,6 +291,9 @@ vvsfs_readdir(struct file *filp, struct dir_context *ctx)
 		k++;
 		dent++;
 	}
+        
+        i->i_size = dirdata.size;
+        mark_inode_dirty(i);
 	// update_atime(i);
 	printk("done readdir\n");
 
@@ -333,14 +336,92 @@ vvsfs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
   return NULL;
 }
 
-int vvsfs_unlink(struct inode *dir, struct dentry *dentry){
+
+ int vvsfs_add_link (struct dentry *dentry, struct inode *inode){
+ 
+    struct inode *dir = dentry->d_parent->d_inode;
+    struct vvsfs_dir_entry *dent;
+    int num_dirs;
+    
+    struct vvsfs_inode inodedata;
+    struct vvsfs_inode newinodedata;
+    vvsfs_readblock(dir->i_sb,dir->i_ino,&inodedata);
+      
+    num_dirs = inodedata.size/sizeof(struct vvsfs_dir_entry);
+ 
+ 
+    dent = (struct vvsfs_dir_entry *) ((inodedata.data) + num_dirs*sizeof(struct vvsfs_dir_entry));
+ 
+ 
+    strncpy(dent->name, dentry->d_name.name, dentry->d_name.len);
+ 
+    dent->name[dentry->d_name.len] = '\0';
+ 
+    dent->inode_number = inode->i_ino;
+ 
+ 
+    inodedata.size = (num_dirs + 1)*sizeof(struct vvsfs_dir_entry);
+    
+    
+    dir->i_size = inodedata.size;
+    mark_inode_dirty(dir);
+ 
+    vvsfs_writeblock(dir->i_sb,dir->i_ino,&inodedata);
+ 
+    vvsfs_readblock(inode->i_sb,inode->i_ino,&newinodedata);
+    
+
+    vvsfs_writeblock(inode->i_sb,inode->i_ino,&newinodedata);
+ 
+    return 0;
+ }
+ 
+ 
+ 
+ 
+ static int vvsfs_link(struct dentry * old_dentry, struct inode *dir, struct dentry *dentry){
+ 
+     struct inode *inode = old_dentry->d_inode;
+     int err;
+ 
+     inode->i_ctime = CURRENT_TIME_SEC;
+ 
+     inode_inc_link_count(inode);
+    
+     mark_inode_dirty(inode);
+     ihold(inode);
+    
+     
+     err = vvsfs_add_link(dentry, inode);
+
+   if (!err) {
+ 		d_instantiate(dentry, inode);
+ 		return 0;
+  	}
+ 
+    inode_dec_link_count(inode);
+    iput(inode); 
+    return err;
+ }
+
+
+
+
+
+
+
+static int vvsfs_unlink(struct inode *dir, struct dentry *dentry){
         
    int num_dirs;
+   int num_hardlinks = 0;
    int k, delindex, del_ino;
  
    struct vvsfs_inode inodedata;
    struct inode *inode = NULL;
    struct vvsfs_dir_entry *dent;
+
+
+   struct inode *root;
 
 
  if(DEBUG) printk("delete file\n");
@@ -373,9 +454,21 @@ int vvsfs_unlink(struct inode *dir, struct dentry *dentry){
       vvsfs_writeblock(dir->i_sb,dir->i_ino,&inodedata);
 
       vvsfs_readblock(inode->i_sb,del_ino,&inodedata);
-      memset(inodedata.data,0,sizeof(inodedata.data));
+    
+
+      root = vvsfs_iget(dir->i_sb,0);//get the root directory
+      num_hardlinks = vvsfs_find_hard_link(root,dentry) + 1;
+    
+  printk("hard link is %i",num_hardlinks);
+
+      
+     if(num_hardlinks == 1)
+      {memset(inodedata.data,0,sizeof(inodedata.data));
       inodedata.size = 0;
-      inodedata.is_empty = 1;
+      inodedata.is_empty = 1;}
+   
+
+
       vvsfs_writeblock(dir->i_sb,del_ino, &inodedata);
 
       inode_dec_link_count(inode);
@@ -467,6 +560,66 @@ void vvsfs_truncate(struct inode * inode, loff_t size)
          
 } 
 
+
+//vvsfs_find_hard_link - because everytime the filesystem is umounted, the cache version about hard link of the file inode will be lost, so this function can promise that the number of hard link of file inode is consistent between each mount.
+
+int vvsfs_find_hard_link(struct inode *dir, struct dentry *dentry)
+{   
+   struct inode *inode;
+
+   struct vvsfs_inode dirdata;
+   struct vvsfs_inode inodedata;
+
+   struct vvsfs_dir_entry *dent;
+
+   int nlink = 0;
+   int k,num_dirs;
+
+
+      vvsfs_readblock(dir->i_sb,dir->i_ino,&dirdata);
+      num_dirs = dirdata.size/sizeof(struct vvsfs_dir_entry);
+      
+       for (k=0;k < num_dirs;k++) {
+
+          dent = (struct vvsfs_dir_entry *) ((dirdata.data) + k*sizeof(struct vvsfs_dir_entry));
+          inode = vvsfs_iget(dir->i_sb, dent->inode_number);
+
+          vvsfs_readblock(inode->i_sb,inode->i_ino,&inodedata); 
+           
+          if(inodedata.is_directory == 1){ nlink += vvsfs_find_hard_link(inode,dentry);}
+     
+          else{
+                if(dent->inode_number == dentry->d_inode->i_ino && ( strncmp(dent->name,dentry->d_name.name,dentry->d_name.len) != 0 || dir->i_ino != dentry->d_parent->d_inode->i_ino) ) nlink ++;}
+//this "if" is checking whether exists any other file has the same inode number, if there exists, add the number of hard link; 
+
+          }
+
+   
+       
+      return nlink;
+
+
+}
+
+
+
+//vvsfs_getattr -when the file inode information is updated, this function will be executed everytime
+
+int vvsfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
+{
+	struct super_block *sb = dentry->d_sb;
+      //  struct inode *dir = dentry->d_parent->d_inode;
+        struct inode *root = vvsfs_iget(sb,0);//get the root directory
+	generic_fillattr(dentry->d_inode, stat);
+	//stat->blocks = (BLOCK_SIZE / 512) * V1_minix_blocks(stat->size, sb);
+
+
+        stat->nlink = vvsfs_find_hard_link(root,dentry) + 1;
+
+        
+	stat->blksize = sb->s_blocksize;
+	return 0;
+}
 
 
 
@@ -664,6 +817,7 @@ static struct file_operations vvsfs_file_operations = {
 static struct inode_operations vvsfs_file_inode_operations = {
 
         setattr :   vvsfs_setattr,   /*  truncate */
+        getattr :   vvsfs_getattr,
 };                                                                                                                                                            
 
 static struct file_operations vvsfs_dir_operations = {
@@ -680,6 +834,7 @@ static struct file_operations vvsfs_dir_operations = {
 static struct inode_operations vvsfs_dir_inode_operations = {
    create:     vvsfs_create,                   /* create */
    lookup:     vvsfs_lookup,           /* lookup */
+   link  :     vvsfs_link,             /* link   */
    unlink:     vvsfs_unlink,           /* unlink */
    mkdir:      vvsfs_mkdir,            /* make directory */
    rmdir:      vvsfs_rmdir,            /* remove directory */
