@@ -56,6 +56,7 @@
 #include <linux/kernel.h>
 #include <linux/version.h>
 #include <asm/uaccess.h>
+#include <linux/seq_file.h>
 
 #include "vvsfs.h"
 
@@ -68,7 +69,11 @@ static struct file_operations vvsfs_dir_operations;
 static struct inode_operations vvsfs_dir_inode_operations;
 struct inode * vvsfs_new_inode(const struct inode *, umode_t);
 static int vvsfs_unlink(struct inode *, struct dentry *);
+static struct super_block * sb;
+
 int vvsfs_find_hard_link(struct inode *, struct dentry *);
+
+static int vvsfs_fill_super(struct super_block *, void *, int);
 
 struct inode *vvsfs_iget(struct super_block *sb, unsigned long ino);
 static void
@@ -808,6 +813,44 @@ vvsfs_file_read(struct file *filp, char *buf, size_t count, loff_t *ppos)
   return size;
 }
 
+//vvsfs_proc_show - cat /proc/vvsfsinfo can see how many inode has been used
+static int vvsfs_proc_show(struct seq_file *m, void *v )
+{
+	int num_inodes = 0;// the number of inodes not empty
+        int size = 0;
+        int i;
+        struct inode *inode;
+        struct vvsfs_inode inodedata;
+
+
+       for(i = 0;i < 100;i++){ //to check our 100 blocks
+          inode = vvsfs_iget(sb,i);
+          vvsfs_readblock(inode->i_sb, inode->i_ino,&inodedata);
+          if(inodedata.is_empty == 0) 
+          {
+           num_inodes ++;  
+           size += inodedata.size;  }
+
+         }      
+        
+        
+     
+   
+          
+          seq_printf(m,"Used Inodes:%i \nUsed memory: %i \n",num_inodes,size);
+       
+	return 0;
+        
+}
+
+
+//vvsfs_proc_open  - to execute vvsfs_proc_show function
+static int vvsfs_proc_open(struct inode *inode, struct file *file)
+{       
+        return single_open(file, vvsfs_proc_show, NULL);
+     
+}
+
 static struct file_operations vvsfs_file_operations = {
         read: vvsfs_file_read,        /* read */
         write: vvsfs_file_write,       /* write */
@@ -838,6 +881,13 @@ static struct inode_operations vvsfs_dir_inode_operations = {
    unlink:     vvsfs_unlink,           /* unlink */
    mkdir:      vvsfs_mkdir,            /* make directory */
    rmdir:      vvsfs_rmdir,            /* remove directory */
+};
+
+static const struct file_operations vvsfs_proc_fops = {
+	.open		= vvsfs_proc_open,
+        .read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
 };
 
 // vvsfs_iget - get the inode from the super block
@@ -912,6 +962,8 @@ static int vvsfs_fill_super(struct super_block *s, void *data, int silent)
   s->s_blocksize = BLOCKSIZE;
   s->s_blocksize_bits = BLOCKSIZE_BITS;
   s->s_root = d_make_root(i);
+  
+  sb = s;
 
   return 0;
 }
@@ -938,6 +990,7 @@ static struct file_system_type vvsfs_type = {
 static int __init vvsfs_init(void)
 {
   printk("Registering vvsfs\n");
+  proc_create("vvsfsinfo",0,NULL,&vvsfs_proc_fops);
   return register_filesystem(&vvsfs_type);/* this point to the vvsfs_type, which is above */ 
 }
 
