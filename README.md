@@ -1,5 +1,6 @@
 # vvsfs 
- 
+Implement filesystem functions under a linux environment
+
 ## remove file function
  
  * Add unlink entry in vvsfs_dir_inode_operations struct  `unlink:     vvsfs_unlink`
